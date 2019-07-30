@@ -86,12 +86,8 @@ vax <- function (years, choice, sector=17, pyp=FALSE, outputpath='cache', datapa
 
     ##INITIALIZE VARS
     message('VAdiag to VA1D', '')
-    VA1D_bak <- diag(VAdiag) #VAdiag #
+    VA1D <- diag(VAdiag) #VAdiag #
     rm(VAdiag)
-    DDfin_bak <- DDfin 
-
-    VA1D <- VA1D_bak
-    DDfin <- DDfin_bak
     #######------######
 
     result <- (diag(0, country_count)+NA)
@@ -123,7 +119,7 @@ vax <- function (years, choice, sector=17, pyp=FALSE, outputpath='cache', datapa
           
         }
         else if (choice == 'VAXP'){
-          assign(choice, sum(VA1D[index]*(L[index:index,]%*%DDfin[slice_j,])))
+          assign(choice, sum(VA1D[index]*(L[index:index,slice_j]%*%DDfin[slice_j,])))
         }
         else if (choice == 'VAXC'){
           assign(choice, sum(VA1D[index]*(L[index:index,]%*%DDfin[,slice_j])))
@@ -164,11 +160,11 @@ corrected_vax <- function(choice, year, corrected_to, sector, dirpath='cache'){
 }
 
 ##BASIC PROCESSING
-choice <- 'VAXC'
+choice <- 'VAXP'
 system.time(vax(years=2000:2014, choice=choice, sector=17, pyp=FALSE))
 system.time(vax(years=2001:2014, choice=choice, sector=17, pyp=TRUE))
 
-##YEARLY CORRETIONS
+##YEARLY CORRECTIONS
 corrected_vax(choice, 2000, 2001, sector=17)
 corrected_vax(choice, 2000, 2002, sector=17)
 corrected_vax(choice, 2000, 2014, sector=17)
