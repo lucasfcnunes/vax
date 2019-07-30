@@ -10,7 +10,7 @@ for (package in c('readstata13')) {
     }
 }
 
-datapath <- 'data' #'C:\\Users\\victor\\Dropbox\\5Wiod\\precos constantes\\WIOD secundarias'
+datapath <- 'data'
 dd_str <- function(int) substr(sprintf("%04d", int), 3, 4) #double digit string
 metadata <- readRDS('utils/metadata.rds')
 
