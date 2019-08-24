@@ -1,21 +1,42 @@
-
 #NECESSARY:
 #have the following folders 'output', 'utils', 'cache'
 
 #LOAD NECESSARY PACKAGES
-for (package in c('readstata13')) {
+for (package in c('readstata13', 'foreach', 'bigstatsr')) {
     if (!require(package, character.only=T, quietly=T)) {
         install.packages(package, repos="http://cran.us.r-project.org")
         library(package, character.only=T)
     }
 }
 
+priorities <- c('USA', 'ROW', 'CHN', 'JPN', 'DEU', 'GBR', 'FRA', 'BRA', 'IND', 'ITA', 'RUS', 'CAN', 'AUS', 'KOR', 'ESP', 'MEX', 'IDN', 'NLD', 'TUR', 'CHE', 'TWN', 'SWE', 'POL', 'BEL', 'NOR', 'AUT', 'DNK', 'FIN', 'IRL', 'GRC', 'PRT', 'CZE', 'ROU', 'HUN', 'SVK', 'LUX', 'BGR', 'HRV', 'LTU', 'SVN', 'LVA', 'EST', 'CYP', 'MLT')
 datapath <- 'data'
 dd_str <- function(int) substr(sprintf("%04d", int), 3, 4) #double digit string
 metadata <- readRDS('utils/metadata.rds')
 
+country_count <- length(metadata$countries)
+country_sectors <- length(metadata$sectors) #sectors in a region
+countries <- seq(from=1, to=country_count, by=1)
+country_slice <- function(country) ((country-1)*country_sectors+1):(country*country_sectors)
+country_sector_slice <- function(country, sector){
+  FUN <- function(sector) (country-1)*country_sectors+sector
+  return(sapply(sector, FUN=FUN))
+}
+country_number <- function(country_name) match(country_name, metadata$countries)
+
+selected_countries <- country_number(priorities[1:10])
+
 gen_vax_info <- function(year, sector, choice, corrected_to=''){
+  aes <- endsWith(choice, 'aes')
+  ##
   corrected_to <- if (corrected_to=='') year else corrected_to
+  dim_ <- rep(country_count, 2)
+  dimnames_ <- rep(list(metadata$countries), 2)
+  if (aes){
+    dim_[[2]] <- 1
+    dimnames_[2] <- list('aes')
+  }
+  
   result <- list(
     choice=choice,
     year=year,
@@ -23,7 +44,9 @@ gen_vax_info <- function(year, sector, choice, corrected_to=''){
     sector=sector,
     sector_description=metadata$sectors[sector],
     varname=paste0(choice, dd_str(year), dd_str(corrected_to), '_sector', dd_str(sector)),
-    dimnames=rep(list(metadata$countries), 2)
+    dim=dim_,
+    dimnames=dimnames_,
+    method='2019-08-24'
   )
   return(result)
 }
@@ -44,23 +67,16 @@ custom_save <- function(obj, outputpath, fextension){
   else message("Couldn't save file...")
 }
 
-vax <- function (years, choice, sector=17, pyp=FALSE, outputpath='cache', datapath='data'){  
+vax <- function (years, choice, sector, pyp=FALSE, outputpath='cache', datapath='data'){  
   message('\nCHOICE: ', choice)
   
-  country_count <- length(metadata$countries)
-  country_sectors <- length(metadata$sectors) #sectors in a region
-  
-  if (choice %in% c('VAXC', 'VAXP')) dnames <- c('L')
-  else if ('VAXD' == choice){
-    dnames <- c('A')
-    I <- diag(country_sectors)
+  dnames <- c('VAdiag', 'L', 'DDfin')
+  if (choice %in% c('VAXC', 'VAXP')) {}#dnames <- c('L')
+  else if (choice %in% c('VAXD', 'VAXDaes')){
+    dnames <- c(dnames, 'A')
+    I <- diag(country_sectors*country_count)
   }
   else stop('impossible choice ', choice, '...')
-  dnames <- c(dnames, c('VAdiag', 'DDfin'))
-  
-  countries <- seq(from=1, to=country_count, by=1)
-  country_slice <- function(country) ((country-1)*country_sectors+1):(country*country_sectors)
-  country_sector_line <- function(country, sector) (country-1)*country_sectors+sector
   
   for(year in years){
     message('\nYEAR: ', year)
@@ -87,54 +103,89 @@ vax <- function (years, choice, sector=17, pyp=FALSE, outputpath='cache', datapa
     ##INITIALIZE VARS
     message('VAdiag to VA1D', '')
     VA1D <- diag(VAdiag) #VAdiag #
-    rm(VAdiag)
+    if (choice %in% c('VAXD', 'VAXDaes')) GDP <- sum(VAdiag%*%L%*%DDfin)
+    #rm(VAdiag)
     #######------######
-
-    result <- (diag(0, country_count)+NA)
-    attributes(result) <- c(
-      attributes(result),
-      gen_vax_info(year=year, sector=sector, choice=choice, corrected_to=if (pyp) year-1 else year),
-      list(newmethod=TRUE, computation=list(start=Sys.time(), delta=NULL))
-                   )
-      
+    
+    info <- c(gen_vax_info(year=year, sector=sector, choice=choice, corrected_to=if (pyp) year-1 else year),
+      list(computation=list(start=Sys.time(), delta=NULL)))
+    result <- FBM(info$dim[[1]], info$dim[[2]]) #(diag(0, country_count)+NA)
+    result[,] <- NA
+                           
     message('Calculating \'', attributes(result)$varname, '\'...')
     # create progress bar
     pb <- txtProgressBar(min=0, max=country_count^2, style = 3)
+    pb_total <- -1
+                           
+    #cl <- parallel::makeCluster(2)
+    #doParallel::registerDoParallel(cl)
+    tmp <- foreach(countryA=countries, .combine = c) %:%
+      foreach(countryB=countries, .combine = c) %do% {
+        #update progress bar
+        setTxtProgressBar(pb, pb_total<-pb_total+1)
+        
+        slice_sector <- country_sector_slice(countryA, sector)
+        sliceA <- country_slice(countryA)
+        sliceB <- country_slice(countryB)
 
-    for (countryB in countries){
-      #message('(index, jndex) = (', index, jndex, ')')
-      slice_j <- country_slice(countryB)
-      #message('"Zeroing" DDfin...')
-      #else stop('not a possible choice')
+        assign(choice, NA)
+        if ((choice %in% c('VAXD', 'VAXDaes')) & (countryA %in% selected_countries) & (countryB %in% selected_countries)){
+          #aes == 'all except self'
+          if (choice == 'VAXDaes'){
+            #stop('not implemented!')
+            if (countryA == countryB){
+              VA1D_ <- VA1D + 0 #replicates #VAdiag_ <- VAdiag + 0 #replicates
+              A_ <- A + 0 #replicates
+              DDfin_ <- DDfin + 0 #replicates
 
-      for (countryA in countries){
-        index <- country_sector_line(countryA, sector)
-        slice_i <- country_slice(countryA)
-        if (choice == 'VAXD'){
-          #L <- if (countryA != countryB) I else solve(I-A[slice_i,slice_j])
-          #assign(choice, sum(VA1D[index]*(L[sector:sector,]%*%DDfin[slice_i,slice_j])))
-          
-          S <- if (countryA == countryB) solve(I-A[slice_i,slice_j])[sector:sector,]%*%DDfin[slice_i,slice_j] else DDfin[index:index,slice_j]
-          assign(choice, sum(VA1D[index]*S))
-          
+              VA1D_[slice_sector] <- 0 #VAdiag_[slice_sector,] <- 0
+              
+              A_[slice_sector, -sliceB] <- 0
+              L_ <- solve(I-A_)
+
+              DDfin_[slice_sector, -sliceB] <- 0
+              
+              assign(choice, GDP - sum(VA1D_%*%L_%*%DDfin_))
+              countryB <- 1 # has only one 'aggregated' column 'aes'...
+            }
+            else return(NULL)
+          }
+          else if (choice == 'VAXD'){
+            VA1D_ <- VA1D + 0 #replicates #VAdiag_ <- VAdiag + 0 #replicates
+            A_ <- A + 0 #replicates
+            DDfin_ <- DDfin + 0 #replicates
+
+            VA1D_[slice_sector] <- 0 #VAdiag_[slice_sector,] <- 0
+
+            A_[slice_sector, sliceB] <- 0
+            L_ <- solve(I-A_)
+
+            DDfin_[slice_sector, sliceB] <- 0
+            
+            assign(choice, GDP - sum(VA1D_%*%L_%*%DDfin_))
+          }
         }
         else if (choice == 'VAXP'){
-          assign(choice, sum(VA1D[index]*(L[index:index,slice_j]%*%DDfin[slice_j,])))
+          assign(choice, sum(VA1D[slice_sector]*(L[slice_sector, sliceB]%*%DDfin[sliceB,])))
         }
         else if (choice == 'VAXC'){
-          assign(choice, sum(VA1D[index]*(L[index:index,]%*%DDfin[,slice_j])))
-        }          
-        #update progress bar
-        setTxtProgressBar(pb, getTxtProgressBar(pb)+1)
+          assign(choice, sum(VA1D[slice_sector]*(L[slice_sector,]%*%DDfin[,sliceB])))
+        }
+        else return(NULL)
 
         result[countryA, countryB] <- get(choice)
-        #message('Success!\n', names(result), '\n', paste(result))
-      }
+        return(NULL)
     }
+    #parallel::stopCluster(cl)
+    result <- result[]
     #close progress bar
     close(pb)
+    #cleaning result
+    result[!is.finite(result)] <- 0
     #stats
-    attributes(result)$computation$delta <- (Sys.time() - attributes(result)$computation$start)
+    info$computation$delta <- (Sys.time() - info$computation$start)
+    #attr
+    attributes(result) <- c(attributes(result), info)
     #saving
     custom_save(result, outputpath=outputpath, fextension='rds')
     rm(result)
@@ -155,19 +206,27 @@ corrected_vax <- function(choice, year, corrected_to, sector, dirpath='cache'){
     attributes(result),
     gen_vax_info(year=year, sector=sector, choice=choice, corrected_to=corrected_to)
   )
+  #cleaning result
+  result[!is.finite(result)] <- 0
+  #saving
   custom_save(result, outputpath=dirpath, fextension='rds')
-  #return(result)
+  rm(result) #return(result)
 }
 
-##BASIC PROCESSING
-choice <- 'VAXP'
-system.time(vax(years=2000:2014, choice=choice, sector=17, pyp=FALSE))
-system.time(vax(years=2001:2014, choice=choice, sector=17, pyp=TRUE))
+choices <- c('VAXDaes')
+sectors <- c(17, 39, 40)
 
-##YEARLY CORRECTIONS
-corrected_vax(choice, 2000, 2001, sector=17)
-corrected_vax(choice, 2000, 2002, sector=17)
-corrected_vax(choice, 2000, 2014, sector=17)
+tmp <- foreach(choice=choices, .combine = c) %:% foreach(sector=sectors, .combine = c) %do% {
+  ##BASIC PROCESSING
+  vax(years=2000:2014, choice=choice, sector=sector, pyp=FALSE)
+  vax(years=2001:2014, choice=choice, sector=sector, pyp=TRUE)
+
+  ##YEARLY CORRECTIONS
+  corrected_vax(choice, 2000, 2001, sector=sector)
+  corrected_vax(choice, 2000, 2002, sector=sector)
+  corrected_vax(choice, 2000, 2014, sector=sector)
+  NULL
+}
 
 ##TO CSV
 dirpath <- 'output'
